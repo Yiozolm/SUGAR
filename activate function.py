@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from enum import Enum
 from typing import Any, Optional, Tuple
+from tricode import _NeLU_triton_backward, _BSiLU_triton_backward
+
 
 class SurrogateType(Enum):
     BSILU = "BSiLU"
@@ -31,11 +33,12 @@ class SUGARFunction(torch.autograd.Function):
     Applies the SUGAR method to ReLU activation.
     """
     @staticmethod
-    def forward(ctx: Any, x: torch.Tensor, surrogate_type: SurrogateType) -> torch.Tensor:
+    def forward(ctx: Any, x: torch.Tensor, surrogate_type: SurrogateType, use_triton=False) -> torch.Tensor:
         """
         Forward pass: Applies ReLU.
         """
         ctx.surrogate_type = surrogate_type
+        ctx.use_triton = use_triton
         ctx.save_for_backward(x)
         return torch.relu(x)
 
@@ -46,9 +49,15 @@ class SUGARFunction(torch.autograd.Function):
         """
         x, = ctx.saved_tensors
         if ctx.surrogate_type == SurrogateType.BSILU:
-            grad_x = BSiLU().gradient(x) * grad_output
+            if ctx.use_triton:
+                grad_x = _BSiLU_triton_backward(x) * grad_output
+            else:
+                grad_x = BSiLU().gradient(x) * grad_output
         elif ctx.surrogate_type == SurrogateType.NELU:
-            grad_x = NeLU().gradient(x) * grad_output
+            if ctx.use_triton:
+                grad_x = _NeLU_triton_backward(x) * grad_output
+            else:
+                grad_x = NeLU().gradient(x) * grad_output
         else:
             raise ValueError(f"Unsupported surrogate type: {ctx.surrogate_type}")
         return grad_x, None  # None for the surrogate_type argument
