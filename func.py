@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from enum import Enum
 from typing import Any, Optional, Tuple
-from tricode import _NeLU_triton_backward, _BSiLU_triton_backward
+from tricode import _NeLU_triton_backward, _BSiLU_triton_backward, _relu_triton_forward
 
 
 class SurrogateType(Enum):
@@ -40,7 +40,10 @@ class SUGARFunction(torch.autograd.Function):
         ctx.surrogate_type = surrogate_type
         ctx.use_triton = use_triton
         ctx.save_for_backward(x)
-        return torch.relu(x)
+        if use_triton:
+            return _relu_triton_forward(x)
+        else:
+            return torch.relu(x)
 
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[Optional[torch.Tensor], None]:
@@ -60,15 +63,15 @@ class SUGARFunction(torch.autograd.Function):
                 grad_x = NeLU().gradient(x) * grad_output
         else:
             raise ValueError(f"Unsupported surrogate type: {ctx.surrogate_type}")
-        return grad_x, None  # None for the surrogate_type argument
+        return grad_x, None, None  # None for the surrogate_type argument
 
 class SUGAR(nn.Module):
     def __init__(self, surrogate_type: SurrogateType) -> None:
         super().__init__()
         self.surrogate_type = surrogate_type
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return SUGARFunction.apply(x, self.surrogate_type)
+    def forward(self, x: torch.Tensor, use_triton=False) -> torch.Tensor:
+        return SUGARFunction.apply(x, self.surrogate_type, use_triton)
 
 if __name__ == '__main__':
     x = torch.randn(10, requires_grad=True)
@@ -77,11 +80,14 @@ if __name__ == '__main__':
     sugar_bsilu = SUGAR(SurrogateType.BSILU)
     output_bsilu = sugar_bsilu(x)
     output_bsilu.sum().backward()
-    print("BSiLU gradients:", x.grad)
+    print("BSiLU torch gradients:", x.grad)
+    output_bsilu_triton = sugar_bsilu(x, use_triton=True)
+    output_bsilu_triton.sum().backward()
+    print("BSiLU triton gradients:", x.grad)
 
     # Example usage with NeLU
-    x.grad.zero_()  # Reset gradients
-    sugar_nelu = SUGAR(SurrogateType.NELU)
-    output_nelu = sugar_nelu(x)
-    output_nelu.sum().backward()
-    print("NeLU gradients:", x.grad)
+    # x.grad.zero_()  # Reset gradients
+    # sugar_nelu = SUGAR(SurrogateType.NELU)
+    # output_nelu = sugar_nelu(x)
+    # output_nelu.sum().backward()
+    # print("NeLU gradients:", x.grad)
